@@ -1,16 +1,14 @@
 use bonsai_bt::Behavior::Wait;
 use bonsai_bt::{
-    Behavior::Race, Behavior::Action, Behavior::Sequence,
-    Event, Status, Timer, UpdateArgs, BT, RUNNING,
+    Behavior::Action, Behavior::Race, Behavior::Sequence, Event, Float, Status, Timer, UpdateArgs, BT, RUNNING,
 };
 use futures::FutureExt;
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread::sleep;
 use std::time::Duration;
 use tokio::time::sleep as async_sleep;
-use rand::Rng;
-
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub enum MissionAction {
@@ -21,7 +19,7 @@ pub enum MissionAction {
 }
 
 pub struct MissionState {
-    pub work:    Option<Receiver<Status>>,
+    pub work: Option<Receiver<Status>>,
 }
 
 /// Simulates a unit of work whose duration is random.
@@ -33,7 +31,6 @@ async fn do_work_task(tx: std::sync::mpsc::Sender<Status>) {
     let step = Duration::from_millis(100);
     let mut elapsed = 0u64;
     while elapsed < work_ms {
-
         if tx.send(Status::Running).is_err() {
             println!("[do_work] preempted by timeout, stopping.");
             return;
@@ -50,17 +47,18 @@ async fn tick(
     timer: &mut Timer,
     state: &mut MissionState,
     bt: &mut BT<MissionAction, HashMap<String, serde_json::Value>>,
-) -> std::option::Option<(Status, f64)> {
-    let dt = timer.get_dt();
+) -> std::option::Option<(Status, Float)> {
+    let dt: Float = timer.get_dt();
     let e: Event = UpdateArgs { dt }.into();
 
-    bt.tick(&e, &mut |args: bonsai_bt::ActionArgs<Event, MissionAction>, _| {
-        match *args.action {
+    bt.tick(
+        &e,
+        &mut |args: bonsai_bt::ActionArgs<Event, MissionAction>, _| match *args.action {
             MissionAction::DoWork => {
                 if let Some(rx) = &state.work {
                     match rx.recv() {
-                        Ok(Status::Running)  => RUNNING,
-                        Ok(Status::Success)  => {
+                        Ok(Status::Running) => RUNNING,
+                        Ok(Status::Success) => {
                             state.work = None;
                             (Status::Success, args.dt)
                         }
@@ -86,29 +84,22 @@ async fn tick(
                 eprintln!("do_work timed out!");
                 (Status::Failure, args.dt)
             }
-        }
-    })
+        },
+    )
 }
 
 #[tokio::main]
 async fn main() {
-    const TIMEOUT_S: f64 = 0.6;
+    const TIMEOUT_S: Float = 0.6;
 
-    let behavior = Sequence(vec![
-        Race(vec![
-            Action(MissionAction::DoWork),
-            Sequence(vec![
-                Wait(TIMEOUT_S),
-                Action(MissionAction::OnTimeout)
-            ])
-        ]),
-    ]);
+    let behavior = Sequence(vec![Race(vec![
+        Action(MissionAction::DoWork),
+        Sequence(vec![Wait(TIMEOUT_S), Action(MissionAction::OnTimeout)]),
+    ])]);
 
     let mut bt = BT::new(behavior, HashMap::new());
     let mut timer = Timer::init_time();
-    let mut state = MissionState {
-        work:    None,
-    };
+    let mut state = MissionState { work: None };
 
     loop {
         sleep(Duration::from_millis(50));
